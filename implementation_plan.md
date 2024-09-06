@@ -51,7 +51,7 @@ Files: `src/listlambda/api.py`, `src/listlambda/identity.py`, `src/listlambda/ht
 
 Deliverables:
 - Attachment routes issuing pre-signed PUT/GET URLs; attachment metadata stored as items
-  under the task's partition (`SK = TASK#<id>#ATT#<att_id>`), cleaned up on task delete.
+  under the task's partition (`SK = ATT#<task_id>#<att_id>`), cleaned up on task delete.
 - Static web client bucket + minimal `static/index.html`.
 - Notifier Lambda on the DynamoDB stream publishing typed events to SNS; optional email
   subscription parameter.
