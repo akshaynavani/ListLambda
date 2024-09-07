@@ -11,6 +11,7 @@ from typing import Any
 from aws_lambda_powertools.event_handler import APIGatewayHttpResolver, CORSConfig, Response
 from aws_lambda_powertools.event_handler.exceptions import NotFoundError as RouteNotFound
 
+from . import attachments
 from .config import get_settings
 from .errors import ListLambdaError, ValidationError
 from .http import error_response, json_response, parse_limit
@@ -120,7 +121,36 @@ def complete_task(task_id: str):
 
 @app.delete("/tasks/<task_id>")
 def delete_task(task_id: str):
-    repo().delete(_owner(), task_id)
+    owner = _owner()
+    repo().delete(owner, task_id)
+    attachments.service().purge_task(owner, task_id)
+    return Response(status_code=204, body="")
+
+
+# ---- attachments --------------------------------------------------------------
+
+
+@app.post("/tasks/<task_id>/attachments")
+def request_attachment_upload(task_id: str):
+    owner = _owner()
+    attachment = attachments.parse_upload_request(_body(), owner, task_id)
+    return json_response(201, attachments.service().request_upload(attachment))
+
+
+@app.get("/tasks/<task_id>/attachments")
+def list_attachments(task_id: str):
+    items = attachments.service().list(_owner(), task_id)
+    return json_response(200, {"items": [a.to_public() for a in items]})
+
+
+@app.get("/tasks/<task_id>/attachments/<attachment_id>")
+def get_attachment(task_id: str, attachment_id: str):
+    return json_response(200, attachments.service().download_url(_owner(), task_id, attachment_id))
+
+
+@app.delete("/tasks/<task_id>/attachments/<attachment_id>")
+def delete_attachment(task_id: str, attachment_id: str):
+    attachments.service().delete(_owner(), task_id, attachment_id)
     return Response(status_code=204, body="")
 
 
