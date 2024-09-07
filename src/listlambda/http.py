@@ -8,7 +8,7 @@ from typing import Any
 
 from aws_lambda_powertools.event_handler import Response, content_types
 
-from .errors import ListLambdaError
+from .errors import ListLambdaError, ValidationError
 
 
 def _default(value: Any) -> Any:
@@ -38,8 +38,6 @@ def error_response(exc: ListLambdaError, request_id: str | None = None) -> Respo
 
 
 def parse_limit(raw: str | None, default: int, maximum: int) -> int:
-    from .errors import ValidationError
-
     if raw is None or raw == "":
         return default
     try:
