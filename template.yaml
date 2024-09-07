@@ -69,6 +69,15 @@ Resources:
     Type: AWS::Serverless::HttpApi
     Properties:
       StageName: !Ref Stage
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowHeaders: [Content-Type, Authorization, X-User-Id, If-Match]
+        AllowMethods: [GET, POST, PATCH, DELETE, OPTIONS]
+        ExposeHeaders: [ETag, Location]
+        MaxAge: 600
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 2000
+        ThrottlingRateLimit: 1000
 
   ApiFunction:
     Type: AWS::Serverless::Function
@@ -82,12 +91,27 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref TasksTable
       Events:
-        Proxy:
+        Health:
           Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /{proxy+}
-            Method: ANY
+          Properties: { ApiId: !Ref HttpApi, Path: /health, Method: GET }
+        CreateTask:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: /tasks, Method: POST }
+        ListTasks:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: /tasks, Method: GET }
+        GetTask:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: /tasks/{task_id}, Method: GET }
+        UpdateTask:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: /tasks/{task_id}, Method: PATCH }
+        DeleteTask:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: /tasks/{task_id}, Method: DELETE }
+        CompleteTask:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: /tasks/{task_id}/complete, Method: POST }
 
 Outputs:
   ApiUrl:

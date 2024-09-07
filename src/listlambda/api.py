@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aws_lambda_powertools.event_handler import APIGatewayHttpResolver, CORSConfig
+from aws_lambda_powertools.event_handler import APIGatewayHttpResolver, CORSConfig, Response
 from aws_lambda_powertools.event_handler.exceptions import NotFoundError as RouteNotFound
 
 from .config import get_settings
@@ -22,7 +22,8 @@ _settings = get_settings()
 
 cors = CORSConfig(
     allow_origin="*",
-    allow_headers=["Content-Type", "Authorization", "X-User-Id"],
+    allow_headers=["Content-Type", "Authorization", "X-User-Id", "If-Match"],
+    expose_headers=["ETag", "Location"],
     max_age=600,
 )
 app = APIGatewayHttpResolver(cors=cors, strip_prefixes=[f"/{_settings.stage}"])
@@ -120,7 +121,7 @@ def complete_task(task_id: str):
 @app.delete("/tasks/<task_id>")
 def delete_task(task_id: str):
     repo().delete(_owner(), task_id)
-    return json_response(204, None)
+    return Response(status_code=204, body="")
 
 
 # ---- error mapping ------------------------------------------------------------
