@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ListLambda</title>
+  <style>
+    :root { --bg: #f7f7f5; --fg: #1d1d1b; --muted: #6b6b66; --line: #ddd; --accent: #2f6fdd; }
+    body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+    main { max-width: 640px; margin: 0 auto; padding: 24px 16px; }
+    h1 { font-size: 22px; margin: 0 0 16px; }
+    fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+    input, select, button { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
+    button { background: var(--accent); color: #fff; border: 0; cursor: pointer; }
+    ul { list-style: none; padding: 0; }
+    li { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+    li.done span { text-decoration: line-through; color: var(--muted); }
+    li span { flex: 1; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .row input { flex: 1; min-width: 160px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>ListLambda</h1>
+  <fieldset>
+    <legend>Connection</legend>
+    <div class="row">
+      <input id="api" placeholder="API URL, e.g. https://abc.execute-api.us-east-1.amazonaws.com/dev">
+      <input id="user" placeholder="User id (dev mode)">
+      <button id="connect">Load</button>
+    </div>
+  </fieldset>
+  <form id="new" class="row">
+    <input id="title" placeholder="New task title" required>
+    <select id="priority"><option>low</option><option selected>medium</option><option>high</option></select>
+    <input id="due" type="date">
+    <button>Add</button>
+  </form>
+  <ul id="tasks"></ul>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const saved = JSON.parse(localStorage.getItem("listlambda") || "{}");
+  $("api").value = saved.api || "";
+  $("user").value = saved.user || "";
+
+  async function call(method, path, body) {
+    const res = await fetch($("api").value.replace(/\/$/, "") + path, {
+      method,
+      headers: { "Content-Type": "application/json", "X-User-Id": $("user").value },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (res.status === 204) return null;
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ? data.error.message : res.statusText);
+    return data;
+  }
+
+  async function load() {
+    localStorage.setItem("listlambda", JSON.stringify({ api: $("api").value, user: $("user").value }));
+    const { items } = await call("GET", "/tasks?limit=100");
+    const list = $("tasks");
+    list.innerHTML = "";
+    for (const t of items) {
+      const li = document.createElement("li");
+      li.className = t.status === "done" ? "done" : "";
+      const label = document.createElement("span");
+      label.textContent = `${t.title} · ${t.priority}${t.due_date ? " · due " + t.due_date : ""}`;
+      const done = document.createElement("button");
+      done.textContent = "Done";
+      done.disabled = t.status === "done";
+      done.onclick = async () => { await call("POST", `/tasks/${t.id}/complete`); load(); };
+      const del = document.createElement("button");
+      del.textContent = "Delete";
+      del.onclick = async () => { await call("DELETE", `/tasks/${t.id}`); load(); };
+      li.append(label, done, del);
+      list.append(li);
+    }
+  }
+
+  $("connect").onclick = () => load().catch((e) => alert(e.message));
+  $("new").onsubmit = async (ev) => {
+    ev.preventDefault();
+    const body = { title: $("title").value, priority: $("priority").value };
+    if ($("due").value) body.due_date = $("due").value;
+    try { await call("POST", "/tasks", body); $("title").value = ""; load(); }
+    catch (e) { alert(e.message); }
+  };
+</script>
+</body>
+</html>
