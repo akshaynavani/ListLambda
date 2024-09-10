@@ -16,6 +16,7 @@ import boto3
 
 from .config import get_settings
 from .events import DomainEvent, events_from_record
+from .observability import count, logger, metrics, tracer
 
 _sns = None
 
@@ -40,6 +41,7 @@ def _json_default(value: Any) -> Any:
     raise TypeError(type(value))
 
 
+@tracer.capture_method
 def publish(events: list[DomainEvent], topic_arn: str) -> None:
     for start in range(0, len(events), 10):
         chunk = events[start : start + 10]
@@ -56,10 +58,15 @@ def publish(events: list[DomainEvent], topic_arn: str) -> None:
             for i, e in enumerate(chunk)
         ]
         resp = sns_client().publish_batch(TopicArn=topic_arn, PublishBatchRequestEntries=entries)
+        count("EventsPublished", len(chunk) - len(resp.get("Failed", [])))
         if resp.get("Failed"):
+            count("EventPublishFailures", len(resp["Failed"]))
             raise RuntimeError(f"SNS publish failed for {len(resp['Failed'])} entries")
 
 
+@logger.inject_lambda_context
+@tracer.capture_lambda_handler
+@metrics.log_metrics
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     topic_arn = get_settings().events_topic_arn
     failures: list[dict[str, str]] = []
@@ -69,6 +76,10 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             if domain_events:
                 publish(domain_events, topic_arn)
         except Exception:  # noqa: BLE001 - report and let the stream retry this record
+            logger.exception(
+                "failed to publish events for record",
+                extra={"event_id": record.get("eventID")},
+            )
             seq = record.get("dynamodb", {}).get("SequenceNumber")
             if seq:
                 failures.append({"itemIdentifier": seq})

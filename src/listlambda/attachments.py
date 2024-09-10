@@ -22,6 +22,7 @@ from botocore.config import Config
 from .config import get_settings
 from .errors import NotFoundError, ValidationError
 from .models import Task, new_id, utc_now
+from .observability import count, logger, metrics, tracer
 from .repository import TaskRepository
 
 ALLOWED_CONTENT_TYPES = {
@@ -271,6 +272,9 @@ def set_service(svc: AttachmentService | None) -> None:
     _service = svc
 
 
+@logger.inject_lambda_context
+@tracer.capture_lambda_handler
+@metrics.log_metrics
 def s3_handler(event: dict[str, Any], context: Any) -> dict[str, int]:
     """Lambda entry point for S3 ObjectCreated notifications on the attachments bucket."""
     marked = 0
@@ -279,4 +283,8 @@ def s3_handler(event: dict[str, Any], context: Any) -> dict[str, int]:
         key = urllib.parse.unquote_plus(obj.get("key", ""))
         if service().mark_uploaded(key, int(obj.get("size", 0))):
             marked += 1
+        else:
+            logger.warning("upload event ignored", extra={"s3_key": key})
+    if marked:
+        count("AttachmentsUploaded", marked)
     return {"processed": len(event.get("Records", [])), "marked": marked}

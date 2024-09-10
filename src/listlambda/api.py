@@ -10,6 +10,7 @@ from typing import Any
 
 from aws_lambda_powertools.event_handler import APIGatewayHttpResolver, CORSConfig, Response
 from aws_lambda_powertools.event_handler.exceptions import NotFoundError as RouteNotFound
+from aws_lambda_powertools.logging import correlation_paths
 
 from . import attachments
 from .config import get_settings
@@ -17,6 +18,7 @@ from .errors import ListLambdaError, ValidationError
 from .http import error_response, json_response, parse_limit
 from .identity import resolve_owner_id
 from .models import Status, parse_create, parse_update
+from .observability import count, logger, metrics, tracer
 from .repository import TaskRepository
 
 _settings = get_settings()
@@ -69,6 +71,8 @@ def create_task():
     owner = _owner()
     task = parse_create(_body(), owner)
     repo().create(task)
+    count("TasksCreated")
+    logger.info("task created", extra={"task_id": task.task_id})
     return json_response(201, task.to_public(), headers={"Location": f"/tasks/{task.task_id}"})
 
 
@@ -116,6 +120,7 @@ def update_task(task_id: str):
 @app.post("/tasks/<task_id>/complete")
 def complete_task(task_id: str):
     task = repo().complete(_owner(), task_id)
+    count("TasksCompleted")
     return json_response(200, task.to_public())
 
 
@@ -123,7 +128,10 @@ def complete_task(task_id: str):
 def delete_task(task_id: str):
     owner = _owner()
     repo().delete(owner, task_id)
-    attachments.service().purge_task(owner, task_id)
+    purged = attachments.service().purge_task(owner, task_id)
+    count("TasksDeleted")
+    if purged:
+        count("AttachmentsPurged", purged)
     return Response(status_code=204, body="")
 
 
@@ -134,6 +142,7 @@ def delete_task(task_id: str):
 def request_attachment_upload(task_id: str):
     owner = _owner()
     attachment = attachments.parse_upload_request(_body(), owner, task_id)
+    count("AttachmentUploadsRequested")
     return json_response(201, attachments.service().request_upload(attachment))
 
 
@@ -159,6 +168,8 @@ def delete_attachment(task_id: str, attachment_id: str):
 
 @app.exception_handler(ListLambdaError)
 def handle_domain_error(exc: ListLambdaError):
+    count("ClientErrors" if exc.status_code < 500 else "ServerErrors")
+    logger.info("request rejected", extra={"code": exc.code, "status": exc.status_code})
     return error_response(exc, app.current_event.request_context.request_id)
 
 
@@ -167,5 +178,24 @@ def handle_not_found(_exc: RouteNotFound):
     return json_response(404, {"error": {"code": "route_not_found", "message": "No such route"}})
 
 
+@app.exception_handler(Exception)
+def handle_unexpected(exc: Exception):
+    logger.exception("unhandled error")
+    count("ServerErrors")
+    return json_response(
+        500,
+        {
+            "error": {
+                "code": "internal_error",
+                "message": "Internal server error",
+                "request_id": app.current_event.request_context.request_id,
+            }
+        },
+    )
+
+
+@logger.inject_lambda_context(correlation_id_path=correlation_paths.API_GATEWAY_HTTP)
+@tracer.capture_lambda_handler
+@metrics.log_metrics(capture_cold_start_metric=True)
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     return app.resolve(event, context)
