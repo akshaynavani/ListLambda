@@ -26,8 +26,21 @@ Parameters:
     Default: "*"
     Description: Origin allowed to PUT attachments directly to S3 (CORS).
 
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: Optional email address subscribed to CloudWatch alarm notifications.
+  LatencyP99ThresholdMs:
+    Type: Number
+    Default: 100
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+
 Conditions:
   HasNotificationEmail: !Not [!Equals [!Ref NotificationEmail, ""]]
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+  IsProd: !Equals [!Ref Stage, prod]
 
 Globals:
   Function:
@@ -36,9 +49,16 @@ Globals:
     MemorySize: 512
     Timeout: 10
     CodeUri: src/
+    Tracing: Active
+    LoggingConfig:
+      LogFormat: JSON
     Environment:
       Variables:
         STAGE: !Ref Stage
+        POWERTOOLS_SERVICE_NAME: listlambda
+        POWERTOOLS_METRICS_NAMESPACE: ListLambda
+        POWERTOOLS_LOG_LEVEL: !If [IsProd, INFO, DEBUG]
+        POWERTOOLS_LOGGER_SAMPLE_RATE: "0.05"
         TABLE_NAME: !Ref TasksTable
         ATTACHMENTS_BUCKET: !Sub listlambda-${Stage}-attachments-${AWS::AccountId}
         EVENTS_TOPIC_ARN: !Ref TaskEventsTopic
@@ -151,6 +171,9 @@ Resources:
     Type: AWS::Serverless::HttpApi
     Properties:
       StageName: !Ref Stage
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","method":"$context.httpMethod","path":"$context.path","routeKey":"$context.routeKey","status":"$context.status","latency":"$context.responseLatency","integrationLatency":"$context.integrationLatency","responseLength":"$context.responseLength"}'
       CorsConfiguration:
         AllowOrigins: ["*"]
         AllowHeaders: [Content-Type, Authorization, X-User-Id, If-Match]
@@ -247,6 +270,195 @@ Resources:
             BisectBatchOnFunctionError: true
             FunctionResponseTypes: [ReportBatchItemFailures]
 
+  # ---- CloudWatch: logs -------------------------------------------------------
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/listlambda-${Stage}-access
+      RetentionInDays: !Ref LogRetentionDays
+
+  ApiFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/listlambda-${Stage}-api
+      RetentionInDays: !Ref LogRetentionDays
+
+  NotifierFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/listlambda-${Stage}-notifier
+      RetentionInDays: !Ref LogRetentionDays
+
+  AttachmentUploadedFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/listlambda-${Stage}-attachment-uploaded
+      RetentionInDays: !Ref LogRetentionDays
+
+  # ---- CloudWatch: alarms -----------------------------------------------------
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub listlambda-${Stage}-alarms
+
+  AlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  ApiLatencyP99Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub listlambda-${Stage}-api-latency-p99
+      AlarmDescription: API p99 latency above target
+      Namespace: AWS/ApiGateway
+      MetricName: Latency
+      Dimensions:
+        - { Name: ApiId, Value: !Ref HttpApi }
+        - { Name: Stage, Value: !Ref Stage }
+      ExtendedStatistic: p99
+      Period: 60
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      Threshold: !Ref LatencyP99ThresholdMs
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
+  Api5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub listlambda-${Stage}-api-5xx-rate
+      AlarmDescription: More than 1% of API requests returned 5xx
+      Metrics:
+        - Id: errors
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/ApiGateway
+              MetricName: 5xx
+              Dimensions:
+                - { Name: ApiId, Value: !Ref HttpApi }
+                - { Name: Stage, Value: !Ref Stage }
+            Period: 60
+            Stat: Sum
+        - Id: requests
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/ApiGateway
+              MetricName: Count
+              Dimensions:
+                - { Name: ApiId, Value: !Ref HttpApi }
+                - { Name: Stage, Value: !Ref Stage }
+            Period: 60
+            Stat: Sum
+        - Id: rate
+          Expression: "IF(requests > 0, 100 * errors / requests, 0)"
+          Label: 5xx rate (%)
+          ReturnData: true
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  ApiFunctionErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub listlambda-${Stage}-api-function-errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref ApiFunction }]
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  ApiFunctionThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub listlambda-${Stage}-api-function-throttles
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions: [{ Name: FunctionName, Value: !Ref ApiFunction }]
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  NotifierIteratorAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub listlambda-${Stage}-notifier-iterator-age
+      AlarmDescription: Notifier is falling behind the DynamoDB stream
+      Namespace: AWS/Lambda
+      MetricName: IteratorAge
+      Dimensions: [{ Name: FunctionName, Value: !Ref NotifierFunction }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 60000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  NotifierPublishFailuresAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub listlambda-${Stage}-event-publish-failures
+      Namespace: ListLambda
+      MetricName: EventPublishFailures
+      Dimensions: [{ Name: service, Value: listlambda }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  TableWriteThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub listlambda-${Stage}-dynamodb-write-throttles
+      Namespace: AWS/DynamoDB
+      MetricName: WriteThrottleEvents
+      Dimensions: [{ Name: TableName, Value: !Ref TasksTable }]
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  TableReadThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub listlambda-${Stage}-dynamodb-read-throttles
+      Namespace: AWS/DynamoDB
+      MetricName: ReadThrottleEvents
+      Dimensions: [{ Name: TableName, Value: !Ref TasksTable }]
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
 Outputs:
   ApiUrl:
     Description: Base URL of the HTTP API
@@ -261,3 +473,5 @@ Outputs:
     Value: !Ref StaticSiteBucket
   TaskEventsTopicArn:
     Value: !Ref TaskEventsTopic
+  AlarmTopicArn:
+    Value: !Ref AlarmTopic
