@@ -52,9 +52,11 @@ def _owner() -> str:
 
 
 def _body() -> Any:
+    if not app.current_event.body:
+        raise ValidationError("Request body is required")
     try:
         return app.current_event.json_body
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:
         raise ValidationError("Request body is not valid JSON") from exc
 
 
