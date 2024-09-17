@@ -9,8 +9,8 @@ SPAWN_RATE="${SPAWN_RATE:-50}"
 DURATION="${DURATION:-5m}"
 OUT_DIR="${OUT_DIR:-loadtest/results}"
 
-mkdir -p "$OUT_DIR"
 cd "$(dirname "$0")/.."
+mkdir -p "$OUT_DIR"
 
 locust -f loadtest/locustfile.py \
   --host "$API_URL" \
