@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# AWS SAM
+.aws-sam/
+samconfig.local.toml
+
+# Load test output
+loadtest/results/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
